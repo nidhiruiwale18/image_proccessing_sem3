@@ -1,41 +1,46 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
+from werkzeug.utils import secure_filename
 import os
-import cv2
-from PIL import Image
-
-app = Flask(_name_)
+import torch
+from model import ReconModel
+from utils import run_cs_reconstruction
 
 UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = "static"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+OUTPUT_FOLDER = "outputs"
 
-@app.route('/')
-def home():
-    return "Astronomical Image Processing Backend is Running 🚀"
+app = Flask(_name_)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 
-@app.route('/upload', methods=['POST'])
+# Load trained model
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = ReconModel().to(device)
+model.load_state_dict(torch.load("checkpoint.pth", map_location=device))
+model.eval()
+
+@app.route("/upload", methods=["POST"])
 def upload_file():
-    if 'file' not in request.files:
+    if "file" not in request.files:
         return jsonify({"error": "No file part"})
-    file = request.files['file']
-    if file.filename == '':
+    file = request.files["file"]
+    if file.filename == "":
         return jsonify({"error": "No selected file"})
 
-    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
 
-    # Example: simple grayscale processing
-    img = cv2.imread(filepath)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Run reconstruction pipeline
+    recon_path = os.path.join(app.config['OUTPUT_FOLDER'], "recon_" + filename)
+    run_cs_reconstruction(filepath, recon_path, model, device)
 
-    output_path = os.path.join(OUTPUT_FOLDER, f"processed_{file.filename}")
-    cv2.imwrite(output_path, gray)
+    return jsonify({"result": recon_path})
 
-    return jsonify({
-        "message": "File processed successfully",
-        "processed_image_url": f"/{output_path}"
-    })
+@app.route("/results/<filename>")
+def get_result(filename):
+    return send_from_directory(app.config['OUTPUT_FOLDER'], filename)
 
 if _name_ == "_main_":
-    app.run(debug=True, host="0.0.0.0")
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
